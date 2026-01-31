@@ -24,11 +24,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
-        
+
+      - name: Free Disk Space (Ubuntu)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          
       - name: Prepare kerneldriver directory
         run: |
-          mkdir kerneldriver
-          mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/
+          mkdir -p kerneldriver
+          # 仅在 code 目录存在时移动文件，增加鲁棒性
+          if [ -d "./code" ]; then
+            mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/ || true
+          fi
           
       - name: Install repo tool
         run: |
@@ -49,14 +58,13 @@ jobs:
       - name: Modify Makefile
         run: |
           cd android-kernel
-          echo "obj-y += kerneldriver/" >> common/drivers/Makefile
+          echo "obj-m += kerneldriver/" >> common/drivers/Makefile
 
       - name: Add module to GKI modules list
         if: ${{ github.event.inputs.android_version > 13 }}
         run: |
           cd android-kernel
           MODULE_NAME="drivers/kerneldriver/${{ github.event.inputs.driver_name }}"
-          
           awk -i inplace -v module="$MODULE_NAME" '
             BEGIN { added=0 }
             /_COMMON_GKI_MODULES_LIST = \[/ { in_list=1 }
@@ -81,6 +89,7 @@ jobs:
         run: |
           cd android-kernel
           echo "drivers/kerneldriver/${{ github.event.inputs.driver_name }}" >> common/android/gki_${{ github.event.inputs.target_arch }}_modules
+
       - name: Increase stack frame size limit
         run: |
           cd android-kernel
@@ -91,6 +100,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
+
       - name: Fix missing kprobe symbols for Android 13
         if: ${{ github.event.inputs.android_version == 13 }}
         run: |
@@ -105,22 +115,20 @@ jobs:
         run: |
           cd android-kernel
           if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
-            BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j32
+            BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j$(nproc)
             OUTPUT_PATH="out/android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}/dist"
           else
             echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
             tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
-            OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}"
+            OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}/dist"
           fi
-          echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
-        continue-on-error: true
-      
+          echo "FINAL_OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
           name: kernel-driver-${{ github.event.inputs.target_arch }}
-          # 关键修改：只上传 OUTPUT_PATH 下的所有 .ko 文件
+          # 关键点：使用通配符只上传编译好的驱动文件，避免 OOM
           path: |
-            android-kernel/${{ env.OUTPUT_PATH }}/**/*.ko
-          # 如果你确定文件名就是输入的那个，也可以更精确：
-          # path: android-kernel/${{ env.OUTPUT_PATH }}/**/${{ github.event.inputs.driver_name }}
+            android-kernel/${{ env.FINAL_OUTPUT_PATH }}/**/*.ko
+          if-no-files-found: error
