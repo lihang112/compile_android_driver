@@ -1,13 +1,13 @@
-#include <linux/module.h>
+#include <linux/module.h>    // 修正了前面的 Include
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
-#include <linux/ktime.h>        // 必须：时间函数支持
-#include <linux/timekeeping.h>  // 必须：ktime_get_real_seconds
-#include <linux/mm.h>           // 必须：nr_free_pages 支持
-#include <linux/sched.h>       // 必须：current 指针支持
+#include <linux/ktime.h>
+#include <linux/timekeeping.h>
+#include <linux/mm.h>
+#include <linux/sched.h>
 
 #define DEVICE_NAME "my_cool_dev"
 
@@ -24,32 +24,31 @@ static ssize_t my_read(struct file *file, char __user *buf, size_t count, loff_t
 static ssize_t my_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos) {
     char kbuf[32];
     int cmd;
+    int res;
 
     if (count == 0) return 0;
-    if (count > 31) count = 31;
+    // 留出 \0 的空间
+    if (count > sizeof(kbuf) - 1) count = sizeof(kbuf) - 1;
     
-    // 安全地从用户空间拷贝字符串
     if (copy_from_user(kbuf, buf, count)) return -EFAULT;
     kbuf[count] = '\0';
 
-    // 转换数字，注意处理换行符
-    if (kstrtoint(kbuf, 10, &cmd) != 0) return count;
+    // 使用 kstrtoint 的返回值判断
+    res = kstrtoint(kbuf, 10, &cmd);
+    if (res != 0) return count;
 
     switch (cmd) {
         case 1:
-            // 调用内核时间 API
             {
                 u64 seconds = ktime_get_real_seconds();
                 pr_info("MyDev: Real time seconds: %llu\n", seconds);
             }
             break;
         case 2:
-            // 调用内存管理 API
-            pr_info("MyDev: Free pages: %lu, approx %lu MB\n", 
-                    nr_free_pages(), (nr_free_pages() << (PAGE_SHIFT - 10)) / 1024);
+            // 注意：若 GKI 未导出 nr_free_pages，此处会链接失败
+            pr_info("MyDev: Free pages: %lu\n", nr_free_pages());
             break;
         case 3:
-            // 访问 current 宏 (指向当前进程 task_struct)
             pr_info("MyDev: Target process: %s [%d]\n", current->comm, current->pid);
             break;
         default:
@@ -62,6 +61,7 @@ static const struct file_operations my_fops = {
     .owner = THIS_MODULE,
     .read = my_read,
     .write = my_write,
+    .llseek = no_llseek, // 建议加上，防止非法 seek
 };
 
 static struct miscdevice my_misc = {
@@ -71,13 +71,17 @@ static struct miscdevice my_misc = {
 };
 
 static int __init my_init(void) {
+    pr_info("MyDev: Module loaded\n");
     return misc_register(&my_misc);
 }
 
 static void __exit my_exit(void) {
+    pr_info("MyDev: Module unloaded\n");
     misc_deregister(&my_misc);
 }
 
 module_init(my_init);
 module_exit(my_exit);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("YourName");
+MODULE_DESCRIPTION("A simple GKI driver test");
