@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       android_version:
-        description: 'Android Version (Kernel) (e.g., 14)'
+        description: 'Android Version (Kernel) (e.g., 15)'
         required: true
       kernel_version:
-        description: 'Kernel Version (e.g., 6.1)'
+        description: 'Kernel Version (e.g., 6.6)'
         required: true
       driver_name:
-        description: 'Driver Module Name (e.g., mydriver.ko)'
+        description: 'Driver Module Name (e.g., hello.ko)'
         required: true
       target_arch:
         description: 'Target Architecture (aarch64, x86_64, etc.)'
@@ -57,7 +57,8 @@ jobs:
       - name: Modify Makefile
         run: |
           cd android-kernel
-          echo "obj-yy += kerneldriver/" >> common/drivers/Makefile
+          # 修正点：使用 obj-y (只有一个y) 引导进入子目录
+          echo "obj-y += kerneldriver/" >> common/drivers/Makefile
 
       - name: Add module to GKI modules list
         if: ${{ github.event.inputs.android_version > 13 }}
@@ -100,16 +101,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc python-is-python3
 
-      - name: Fix missing kprobe symbols for Android 13
-        if: ${{ github.event.inputs.android_version == 13 }}
-        run: |
-          cd android-kernel
-          for symbol in register_kprobe unregister_kprobe; do
-            grep -q "$symbol" common/android/abi_gki_${{ github.event.inputs.target_arch }} || \
-            echo "$symbol" >> common/android/abi_gki_${{ github.event.inputs.target_arch }}
-          done
-          sed -i '/EXPORT_SYMBOL(unregister_kprobe);/a EXPORT_SYMBOL(register_kprobe);' common/kernel/kprobes.c
-          
       - name: Build kernel module
         run: |
           cd android-kernel
@@ -117,14 +108,14 @@ jobs:
             BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j$(nproc)
           else
             echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
-            tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
+            # 修正点：增加详细失败日志输出
+            tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist --verbose_failures
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
           name: kernel-driver-${{ github.event.inputs.target_arch }}
-          # 核心修复：直接使用通配符匹配所有生成的 .ko 文件
-          # 这样可以跳过巨大的内核镜像，彻底解决内存溢出问题
+          # 关键点：递归搜索 .ko，跳过大文件，解决 OOM
           path: android-kernel/**/*.ko
           if-no-files-found: error
