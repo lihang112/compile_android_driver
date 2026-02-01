@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
 
-      - name: Free Disk Space (Ubuntu)
+      - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
@@ -34,7 +34,6 @@ jobs:
       - name: Prepare kerneldriver directory
         run: |
           mkdir -p kerneldriver
-          # 仅在 code 目录存在时移动文件，增加鲁棒性
           if [ -d "./code" ]; then
             mv ./code/*.h ./code/*.c ./code/Makefile kerneldriver/ || true
           fi
@@ -47,7 +46,7 @@ jobs:
       - name: Set up Android Kernel source
         run: |
           mkdir -p android-kernel && cd android-kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b common-android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}
+          repo init -u https://android.googlesource.com/kernel/manifest -b common-android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }} --depth=1
           repo sync -j$(nproc) -c --no-tags --optimized-fetch --force-sync
 
       - name: Copy kerneldriver
@@ -116,19 +115,16 @@ jobs:
           cd android-kernel
           if [ ${{ github.event.inputs.android_version }} -le 13 ]; then
             BUILD_CONFIG=common/build.config.gki.${{ github.event.inputs.target_arch }} LTO=thin build/build.sh -j$(nproc)
-            OUTPUT_PATH="out/android${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}/dist"
           else
             echo "Using Bazel build system for Android ${{ github.event.inputs.android_version }}"
             tools/bazel run //common:kernel_${{ github.event.inputs.target_arch }}_dist
-            OUTPUT_PATH="out/kernel_${{ github.event.inputs.target_arch }}/dist"
           fi
-          echo "FINAL_OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4.6.2
         with:
           name: kernel-driver-${{ github.event.inputs.target_arch }}
-          # 关键点：使用通配符只上传编译好的驱动文件，避免 OOM
-          path: |
-            android-kernel/${{ env.FINAL_OUTPUT_PATH }}/**/*.ko
+          # 核心修复：直接使用通配符匹配所有生成的 .ko 文件
+          # 这样可以跳过巨大的内核镜像，彻底解决内存溢出问题
+          path: android-kernel/**/*.ko
           if-no-files-found: error
